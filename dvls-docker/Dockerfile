@@ -1,49 +1,14 @@
-# Dockerfile.dvls-base - DVLS base image for HTTPS deployment (Simplified)
-FROM ubuntu:22.04
+FROM debian:bookworm-slim
+LABEL maintainer="Devolutions Inc."
 
-# Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install essential dependencies for DVLS
-RUN apt-get update && apt-get install -y \
-    # Core utilities
-    wget \
-    curl \
-    apt-transport-https \
-    software-properties-common \
-    ca-certificates \
-    unzip \
-    tar \
-    file \
-    nano \
-    # Network utilities for troubleshooting
-    netcat-openbsd \
-    net-tools \
-    iputils-ping \
-    dnsutils \
-    # SSL/Certificate utilities (required for DVLS HTTPS)
-    openssl \
-    # Database client utilities
-    telnet \
-    # Process utilities for debugging
-    procps \
-    htop \
-    # System utilities
-    sudo \
-    # Required for .NET applications
-    libc6 \
-    libgcc1 \
-    libgssapi-krb5-2 \
-    libicu70 \
-    libssl3 \
-    libstdc++6 \
-    zlib1g \
-    # Required for SQL Server connectivity
-    libodbc1 \
-    odbcinst \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nano git wget curl jq software-properties-common apt-transport-https ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PowerShell 7 (latest stable)
+# Install PowerShell 7
 RUN wget -q https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb \
     && dpkg -i packages-microsoft-prod.deb \
     && rm packages-microsoft-prod.deb \
@@ -51,8 +16,40 @@ RUN wget -q https://packages.microsoft.com/config/ubuntu/22.04/packages-microsof
     && apt-get install -y powershell \
     && rm -rf /var/lib/apt/lists/*
 
-# Verify PowerShell installation
-RUN pwsh --version
+ENV XDG_CACHE_HOME="/tmp/.cache"
+ENV XDG_DATA_HOME="/tmp/.local/share"
+ENV POWERSHELL_TELEMETRY_OPTOUT="1"
+
+# Download DVLS and verify SHA256 hash
+RUN bash -c ' \
+    set -euxo pipefail; \
+    PRODUCT_JSON="$(curl -s https://devolutions.net/productinfo.json)"; \
+    DOWNLOAD_LINE="$(echo "$PRODUCT_JSON" | jq -r ".DVLS.Current.Files[] | select(.Type == \"tar.gz\" and .Arch == \"x64\") | \"\(.Url) \(.Hash)\"")"; \
+    read -r DOWNLOAD_URL HASH_EXPECTED <<< "$DOWNLOAD_LINE"; \
+    FILENAME="/tmp/$(basename "$DOWNLOAD_URL")"; \
+    echo "Downloading $DOWNLOAD_URL..."; \
+    curl -sSL "$DOWNLOAD_URL" -o "$FILENAME"; \
+    HASH_ACTUAL="$(sha256sum "$FILENAME" | awk "{ print toupper(\$1) }")"; \
+    if [ "$HASH_ACTUAL" != "$HASH_EXPECTED" ]; then \
+        echo "❌ Hash mismatch! Expected: $HASH_EXPECTED, Got: $HASH_ACTUAL" >&2; \
+        exit 1; \
+    fi; \
+    echo "✅ Hash OK." \
+'
+
+# Install DVLS and set permissions
+RUN bash -c ' \
+    set -euxo pipefail; \
+    FILENAME="$(find /tmp -maxdepth 1 -name "DVLS.*.tar.gz" | head -n 1)"; \
+    INSTALL_DIR="/opt/devolutions/dvls"; \
+    echo "Extracting $FILENAME to $INSTALL_DIR..."; \
+    mkdir -p "$INSTALL_DIR"; \
+    tar -xzf "$FILENAME" -C "$INSTALL_DIR" --strip-components=1; \
+    chmod 660 "$INSTALL_DIR/appsettings.json"; \
+    chmod 770 "$INSTALL_DIR/App_Data"; \
+    rm -f "$FILENAME"; \
+    echo "✅ DVLS installed and permissions set" \
+'
 
 # Create DVLS user and group (matching official script)
 RUN useradd -N dvls \
@@ -90,12 +87,11 @@ EXPOSE 5000
 # Default working directory
 WORKDIR /opt/devolutions/dvls
 
-# Health check for HTTPS endpoint (will be overridden by Kubernetes probes)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
-    CMD curl -k -f https://localhost:5000/ || exit 1
+ENV DVLS_EXECUTABLE_PATH="/opt/devolutions/dvls/Devolutions.Server"
 
-# Simple entrypoint that can be overridden
-ENTRYPOINT ["/bin/bash"]
+# Install Devolutions.PowerShell module from PSGallery
+RUN pwsh -Command "Install-Module -Name Devolutions.PowerShell -Scope AllUsers -Force"
 
-# Default command - can be overridden in Kubernetes manifests
-CMD ["-c", "echo 'DVLS Base Image Ready for HTTPS - Override CMD in Kubernetes manifest'; sleep infinity"]
+COPY entrypoint.ps1 /usr/local/bin/entrypoint.ps1
+RUN chmod +x /usr/local/bin/entrypoint.ps1
+ENTRYPOINT ["pwsh", "-File", "/usr/local/bin/entrypoint.ps1"]
