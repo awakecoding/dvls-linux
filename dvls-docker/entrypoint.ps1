@@ -41,16 +41,36 @@ if (Test-Path Env:WEBSITE_HOSTNAME) {
 }
 
 $DVLSListenUri = "$WebScheme`://$Hostname`:$WebPort/"
-$DVLSAccessUri = "$ExternalWebScheme`://$Hostname`:$ExternalWebPort/"
+
+if (($ExternalWebScheme -eq 'https' -and $ExternalWebPort -eq 443) -or
+    ($ExternalWebScheme -eq 'http' -and $ExternalWebPort -eq 80)) {
+    $DVLSAccessUri = "$ExternalWebScheme`://$Hostname/"
+} else {
+    $DVLSAccessUri = "$ExternalWebScheme`://$Hostname`:$ExternalWebPort/"
+}
 
 $DVLSPath         = $Env:DVLS_PATH            ?? "/opt/devolutions/dvls"
 $AdminUsername    = $Env:DVLS_ADMIN_USERNAME  ?? "dvls-admin"
 $AdminPassword    = $Env:DVLS_ADMIN_PASSWORD  ?? "dvls-admin"
 $AdminEmail       = $Env:DVLS_ADMIN_EMAIL     ?? "admin@$Hostname"
-$DBHost           = $Env:DVLS_DB_HOST         ?? "localhost"
-$DBName           = $Env:DVLS_DB_NAME         ?? "dvls"
-$DBUser           = $Env:DVLS_DB_USER         ?? "sa"
-$DBPassword       = $Env:DVLS_DB_PASS         ?? "SuperPass123!"
+
+# Load from environment: prefer DATABASE_*, also check AZURE_SQL_* which is used by Azure Web App
+$DatabaseHost     = $Env:DATABASE_HOST     ?? $Env:AZURE_SQL_HOST
+$DatabaseName     = $Env:DATABASE_NAME     ?? $Env:AZURE_SQL_DATABASE
+$DatabaseUsername = $Env:DATABASE_USERNAME ?? $Env:AZURE_SQL_USERNAME
+$DatabasePassword = $Env:DATABASE_PASSWORD ?? $Env:AZURE_SQL_PASSWORD
+$DatabasePort     = $Env:DATABASE_PORT     ?? $Env:AZURE_SQL_PORT ?? "1433"
+
+# Throw if any required value is missing
+if ([string]::IsNullOrEmpty($DatabaseHost))     { throw "DATABASE_HOST or AZURE_SQL_HOST is required." }
+if ([string]::IsNullOrEmpty($DatabaseName))     { throw "DATABASE_NAME or AZURE_SQL_DATABASE is required." }
+if ([string]::IsNullOrEmpty($DatabaseUsername)) { throw "DATABASE_USERNAME or AZURE_SQL_USERNAME is required." }
+if ([string]::IsNullOrEmpty($DatabasePassword)) { throw "DATABASE_PASSWORD or AZURE_SQL_PASSWORD is required." }
+
+# Normalize host with port if needed
+if ($DatabasePort -ne "1433" -and -not $DatabaseHost.Contains(',')) {
+    $DatabaseHost = "$DatabaseHost,$DatabasePort"
+}
 
 $DVLSInit = try { [bool]::Parse($Env:DVLS_INIT) } catch { $false }
 $EnableTelemetry = try { [bool]::Parse($Env:DVLS_TELEMETRY) } catch { $true }
@@ -112,10 +132,10 @@ if ($Env:DVLS_ENCRYPTION_CONFIG_B64) {
 }
 
 $InstallParams = @{
-    "DatabaseHost"           = $DBHost
-    "DatabaseName"           = $DBName
-    "DatabaseUserName"       = $DBUser
-    "DatabasePassword"       = $DBPassword
+    "DatabaseHost"           = $DatabaseHost
+    "DatabaseName"           = $DatabaseName
+    "DatabaseUserName"       = $DatabaseUsername
+    "DatabasePassword"       = $DatabasePassword
     "ServerName"             = $Hostname
     "AccessUri"              = $DVLSAccessUri
     "HttpListenerUri"        = $DVLSListenUri
@@ -124,6 +144,13 @@ $InstallParams = @{
     "TrustServerCertificate" = $false
     "EnableTelemetry"        = $EnableTelemetry
     "DisableEncryptConfig"   = $true
+}
+
+foreach ($key in $InstallParams.Keys) {
+    $value = $InstallParams[$key]
+    if ($null -eq $value -or [string]::IsNullOrWhiteSpace($value.ToString())) {
+        throw "Install configuration parameter '$key' is present but its value is null or empty."
+    }
 }
 
 $Configuration = New-DPSInstallConfiguration @InstallParams
