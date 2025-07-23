@@ -1,4 +1,5 @@
-Import-Module Devolutions.PowerShell -ErrorAction Stop
+$ErrorActionPreference = 'Stop'
+Import-Module Devolutions.PowerShell
 
 $Hostname = 'localhost'
 $WebScheme = 'http'
@@ -54,13 +55,36 @@ $DBPassword       = $Env:DVLS_DB_PASS         ?? "SuperPass123!"
 $DVLSInit = try { [bool]::Parse($Env:DVLS_INIT) } catch { $false }
 $EnableTelemetry = try { [bool]::Parse($Env:DVLS_TELEMETRY) } catch { $true }
 
+$AppDataPath = Join-Path $DVLSPath "App_Data"
+
+$TlsCertificateFile = $null
+if ($Env:TLS_CERTIFICATE_B64) {
+    try {
+        $TlsCertificateFile = Join-Path $AppDataPath "server.pem"
+        [IO.File]::WriteAllBytes($TlsCertificateFile, [Convert]::FromBase64String($Env:TLS_CERTIFICATE_B64))
+    } catch {
+        throw "Failed to decode TLS_CERTIFICATE_B64"
+    }
+}
+
+$TlsPrivateKeyFile = $null
+if ($Env:TLS_PRIVATE_KEY_B64) {
+    try {
+        $TlsPrivateKeyFile = Join-Path $AppDataPath "server.key"
+        [IO.File]::WriteAllBytes($TlsPrivateKeyFile, [Convert]::FromBase64String($Env:TLS_PRIVATE_KEY_B64))
+    } catch {
+        throw "Failed to decode TLS_PRIVATE_KEY_B64"
+    }
+}
+
 # Generate certificate only if using HTTPS
-if ($WebScheme -eq 'https') {
+if ($WebScheme -eq 'https' -and
+    [string]::IsNullOrEmpty($TlsCertificateFile) -and
+    [string]::IsNullOrEmpty($TlsPrivateKeyFile)) {
     Write-Host "Generating self-signed TLS certificate for '$Hostname'..."
 
-    $CertFolder = Join-Path $DVLSPath "App_Data"
-    $TlsCertificateFile = Join-Path $CertFolder "server.pem"
-    $TlsPrivateKeyFile = Join-Path $CertFolder "server.key"
+    $TlsCertificateFile = Join-Path $AppDataPath "server.pem"
+    $TlsPrivateKeyFile = Join-Path $AppDataPath "server.key"
     $Arguments = @(
         "req", "-x509", "-nodes",
         "-newkey", "rsa:2048",
@@ -68,6 +92,7 @@ if ($WebScheme -eq 'https') {
         "-out", $TlsCertificateFile,
         "-subj", "/CN=$Hostname",
         "-addext", "subjectAltName=DNS:$Hostname",
+        "-addext", "extendedKeyUsage = serverAuth",
         "-days", "1825"
     )
 
@@ -77,7 +102,15 @@ if ($WebScheme -eq 'https') {
     }
 }
 
-# Build appsettings.json
+if ($Env:DVLS_ENCRYPTION_CONFIG_B64) {
+    try {
+        $EncryptionConfigFile = Join-Path $AppDataPath "encryption.config"
+        [IO.File]::WriteAllBytes($EncryptionConfigFile, [Convert]::FromBase64String($Env:DVLS_ENCRYPTION_CONFIG_B64))
+    } catch {
+        throw "Failed to decode DVLS_ENCRYPTION_CONFIG_B64"
+    }
+}
+
 $InstallParams = @{
     "DatabaseHost"           = $DBHost
     "DatabaseName"           = $DBName
@@ -98,6 +131,8 @@ New-DPSAppsettings -Configuration $Configuration
 $Settings = Get-DPSAppSettings -ApplicationPath $DVLSPath
 
 if ($DVLSInit) {
+    Write-Host "Initializing Devolutions Server..."
+
     # Initialize and migrate database
     New-DPSDatabase -ConnectionString $Settings.ConnectionStrings.LocalSqlServer
     Update-DPSDatabase -ConnectionString $Settings.ConnectionStrings.LocalSqlServer -InstallationPath $DVLSPath
@@ -113,7 +148,7 @@ if ($DVLSInit) {
         -Email    $AdminEmail   
 }
 
-# Patch appsettings.json with certificate if using HTTPS
+# Update appsettings.json with certificate if using HTTPS
 if ($WebScheme -eq 'https') {
     $AppSettingsPath = Join-Path $DVLSPath 'appsettings.json'
     $AppSettingsJson = Get-Content -Path $AppSettingsPath | ConvertFrom-Json -Depth 10
@@ -125,10 +160,10 @@ if ($WebScheme -eq 'https') {
         }
     }
 
-    Write-Host $($AppSettingsJson | ConvertTo-Json -Depth 10)
-
     $AppSettingsJson | ConvertTo-Json -Depth 10 | Set-Content -Path $AppSettingsPath
 }
+
+Write-Host "Launching Devolutions Server: $DVLSAccessUri"
 
 & "$Env:DVLS_EXECUTABLE_PATH"
 [System.Environment]::ExitCode = $LASTEXITCODE

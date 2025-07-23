@@ -3,18 +3,19 @@ LABEL maintainer="Devolutions Inc."
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install essential dependencies for DVLS
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    nano git wget curl jq software-properties-common apt-transport-https ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install PowerShell 7
-RUN wget -q https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb \
-    && dpkg -i packages-microsoft-prod.deb \
-    && rm packages-microsoft-prod.deb \
-    && apt-get update \
-    && apt-get install -y powershell \
-    && rm -rf /var/lib/apt/lists/*
+# Install DVLS dependencies and PowerShell 7
+RUN set -eux; \
+    apt-get update && apt-get install -y --no-install-recommends \
+        nano git wget curl jq \
+        software-properties-common \
+        apt-transport-https \
+        ca-certificates; \
+    wget -q https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb; \
+    dpkg -i packages-microsoft-prod.deb; \
+    rm packages-microsoft-prod.deb; \
+    apt-get update && apt-get install -y --no-install-recommends \
+        powershell; \
+    rm -rf /var/lib/apt/lists/*
 
 ENV XDG_CACHE_HOME="/tmp/.cache"
 ENV XDG_DATA_HOME="/tmp/.local/share"
@@ -51,29 +52,21 @@ RUN bash -c ' \
     echo "✅ DVLS installed and permissions set" \
 '
 
-# Create DVLS user and group (matching official script)
-RUN useradd -N dvls \
-    && groupadd dvls \
-    && usermod -a -G dvls dvls \
-    && mkdir -p /opt/devolutions/dvls
-
-# Create script mount points (will be populated via ConfigMaps at runtime)
-RUN mkdir -p /runtime-scripts /config-templates /log-scripts \
-    && chmod 755 /runtime-scripts /config-templates /log-scripts
-
-# Set proper permissions (matching official script pattern)
-RUN chown -R dvls:dvls /opt/devolutions/dvls \
-    && chmod 550 /opt/devolutions/dvls
-
-# Create directories that DVLS expects
-RUN mkdir -p /opt/devolutions/dvls/App_Data \
-    && chown -R dvls:dvls /opt/devolutions/dvls/App_Data \
-    && chmod 770 /opt/devolutions/dvls/App_Data
-
-# Set up certificate directory with proper permissions
-RUN mkdir -p /opt/devolutions/dvls/certs \
-    && chown dvls:dvls /opt/devolutions/dvls/certs \
-    && chmod 750 /opt/devolutions/dvls/certs
+# Prepare DVLS user, directory structure, and permissions
+RUN set -eux; \
+    useradd -N dvls && groupadd dvls && usermod -a -G dvls dvls; \
+    mkdir -p \
+        /opt/devolutions/dvls \
+        /opt/devolutions/dvls/App_Data \
+        /opt/devolutions/dvls/certs \
+        /runtime-scripts \
+        /config-templates \
+        /log-scripts; \
+    chown -R dvls:dvls /opt/devolutions/dvls; \
+    chmod 550 /opt/devolutions/dvls; \
+    chmod 770 /opt/devolutions/dvls/App_Data; \
+    chmod 750 /opt/devolutions/dvls/certs; \
+    chmod 755 /runtime-scripts /config-templates /log-scripts
 
 # Environment variables for production
 ENV SCHEDULER_EMBEDDED=true
