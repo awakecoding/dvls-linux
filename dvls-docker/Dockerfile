@@ -21,22 +21,8 @@ ENV XDG_CACHE_HOME="/tmp/.cache"
 ENV XDG_DATA_HOME="/tmp/.local/share"
 ENV POWERSHELL_TELEMETRY_OPTOUT="1"
 
-# Download DVLS and verify SHA256 hash
-RUN bash -c ' \
-    set -euxo pipefail; \
-    PRODUCT_JSON="$(curl -s https://devolutions.net/productinfo.json)"; \
-    DOWNLOAD_LINE="$(echo "$PRODUCT_JSON" | jq -r ".DVLS.Current.Files[] | select(.Type == \"tar.gz\" and .Arch == \"x64\") | \"\(.Url) \(.Hash)\"")"; \
-    read -r DOWNLOAD_URL HASH_EXPECTED <<< "$DOWNLOAD_LINE"; \
-    FILENAME="/tmp/$(basename "$DOWNLOAD_URL")"; \
-    echo "Downloading $DOWNLOAD_URL..."; \
-    curl -sSL "$DOWNLOAD_URL" -o "$FILENAME"; \
-    HASH_ACTUAL="$(sha256sum "$FILENAME" | awk "{ print toupper(\$1) }")"; \
-    if [ "$HASH_ACTUAL" != "$HASH_EXPECTED" ]; then \
-        echo "❌ Hash mismatch! Expected: $HASH_EXPECTED, Got: $HASH_ACTUAL" >&2; \
-        exit 1; \
-    fi; \
-    echo "✅ Hash OK." \
-'
+# Copy DVLS tarball from build context
+COPY DVLS.*.tar.gz /tmp/
 
 # Install DVLS and set permissions
 RUN bash -c ' \
