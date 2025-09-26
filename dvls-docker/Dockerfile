@@ -3,19 +3,29 @@ LABEL maintainer="Devolutions Inc."
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install DVLS dependencies and PowerShell 7
+# Install DVLS dependencies (without PowerShell)
 RUN set -eux; \
-    apt-get update && apt-get install -y --no-install-recommends \
-        nano git wget curl jq \
-        software-properties-common \
-        apt-transport-https \
-        ca-certificates; \
-    wget -q https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb; \
-    dpkg -i packages-microsoft-prod.deb; \
-    rm packages-microsoft-prod.deb; \
-    apt-get update && apt-get install -y --no-install-recommends \
-        powershell; \
+    apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+        nano git wget curl jq openssh-server \
+        software-properties-common apt-transport-https ca-certificates; \
     rm -rf /var/lib/apt/lists/*
+
+# Install PowerShell 7 from GitHub releases
+RUN set -eux; \
+    ARCH="$(dpkg --print-architecture)"; \
+    case "$ARCH" in \
+        amd64) PS_ARCH='x64' ;; \
+        arm64) PS_ARCH='arm64' ;; \
+        *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
+    esac; \
+    PS_VERSION=$(curl -s https://api.github.com/repos/PowerShell/PowerShell/releases/latest | jq -r '.tag_name' | sed 's/^v//'); \
+    echo "Installing PowerShell $PS_VERSION for $PS_ARCH"; \
+    wget -q "https://github.com/PowerShell/PowerShell/releases/download/v${PS_VERSION}/powershell-${PS_VERSION}-linux-${PS_ARCH}.tar.gz"; \
+    mkdir -p /opt/microsoft/powershell/7; \
+    tar -xzf "powershell-${PS_VERSION}-linux-${PS_ARCH}.tar.gz" -C /opt/microsoft/powershell/7; \
+    chmod +x /opt/microsoft/powershell/7/pwsh; \
+    ln -sf /opt/microsoft/powershell/7/pwsh /usr/local/bin/pwsh; \
+    rm "powershell-${PS_VERSION}-linux-${PS_ARCH}.tar.gz"
 
 ENV XDG_CACHE_HOME="/tmp/.cache"
 ENV XDG_DATA_HOME="/tmp/.local/share"

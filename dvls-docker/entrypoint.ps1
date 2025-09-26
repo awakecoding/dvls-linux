@@ -78,7 +78,10 @@ $EnableTelemetry = try { [bool]::Parse($Env:DVLS_TELEMETRY) } catch { $true }
 $AppDataPath = Join-Path $DVLSPath "App_Data"
 
 $TlsCertificateFile = $null
-if ($Env:TLS_CERTIFICATE_B64) {
+if ($Env:TLS_CERTIFICATE_FILE -and (Test-Path $Env:TLS_CERTIFICATE_FILE)) {
+    # Use certificate file path directly from environment (e.g., k8s mounted secret)
+    $TlsCertificateFile = $Env:TLS_CERTIFICATE_FILE
+} elseif ($Env:TLS_CERTIFICATE_B64) {
     try {
         $TlsCertificateFile = Join-Path $AppDataPath "server.pem"
         [IO.File]::WriteAllBytes($TlsCertificateFile, [Convert]::FromBase64String($Env:TLS_CERTIFICATE_B64))
@@ -88,7 +91,10 @@ if ($Env:TLS_CERTIFICATE_B64) {
 }
 
 $TlsPrivateKeyFile = $null
-if ($Env:TLS_PRIVATE_KEY_B64) {
+if ($Env:TLS_PRIVATE_KEY_FILE -and (Test-Path $Env:TLS_PRIVATE_KEY_FILE)) {
+    # Use private key file path directly from environment (e.g., k8s mounted secret)
+    $TlsPrivateKeyFile = $Env:TLS_PRIVATE_KEY_FILE
+} elseif ($Env:TLS_PRIVATE_KEY_B64) {
     try {
         $TlsPrivateKeyFile = Join-Path $AppDataPath "server.key"
         [IO.File]::WriteAllBytes($TlsPrivateKeyFile, [Convert]::FromBase64String($Env:TLS_PRIVATE_KEY_B64))
@@ -188,6 +194,44 @@ if ($WebScheme -eq 'https') {
     }
 
     $AppSettingsJson | ConvertTo-Json -Depth 10 | Set-Content -Path $AppSettingsPath
+}
+
+$SshEnabled = try { [bool]::Parse($Env:SSH_ENABLED) } catch { $false }
+
+if ((Test-Path Env:WEBSITE_INSTANCE_ID) -and (-Not (Test-Path Env:SSH_ENABLED))) {
+    $SshEnabled = $true # Launch SSH server by default in Azure Web App
+}
+
+if ($SshEnabled) {
+    $SshPort = if ($Env:SSH_PORT) { $Env:SSH_PORT } else { "2222" }
+    $SshPassword = if ($Env:SSH_PASSWORD) { $Env:SSH_PASSWORD } else { "Docker!" }
+
+    # Set root password
+    bash -c "echo 'root:$SshPassword' | chpasswd"
+
+    # Create SSH directory
+    New-Item -ItemType Directory -Force -Path "/var/run/sshd" | Out-Null
+
+    # Generate SSH config
+    @"
+Port $SshPort
+ListenAddress 0.0.0.0
+LoginGraceTime 180
+PermitRootLogin yes
+PasswordAuthentication yes
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+X11Forwarding yes
+Ciphers aes128-cbc,3des-cbc,aes256-cbc,aes128-ctr,aes192-ctr,aes256-ctr
+MACs hmac-sha1,hmac-sha1-96
+StrictModes yes
+SyslogFacility DAEMON
+Subsystem sftp internal-sftp
+"@ | Out-File -FilePath "/etc/ssh/sshd_config" -Encoding ASCII
+
+    # Start SSH daemon
+    Start-Process -FilePath "/usr/sbin/sshd" -ArgumentList "-D", "-p", $SshPort -PassThru | Out-Null
+    Write-Host "SSH daemon started on port $SshPort"
 }
 
 Write-Host "Launching Devolutions Server: $DVLSAccessUri"
